@@ -1,0 +1,523 @@
+#! /bin/sh
+# by pts@fazekas.hu at Fri Dec  4 22:15:59 CET 2015
+
+""":" #flickrurlget: Flickr photo downloader from command-line in batch
+
+type python2.7 >/dev/null 2>&1 && exec python2.7 -- "$0" ${1+"$@"}
+type python2.6 >/dev/null 2>&1 && exec python2.6 -- "$0" ${1+"$@"}
+type python2.5 >/dev/null 2>&1 && exec python2.5 -- "$0" ${1+"$@"}
+type python2.4 >/dev/null 2>&1 && exec python2.4 -- "$0" ${1+"$@"}
+exec python -- ${1+"$@"}; exit 1
+
+flickrurlget is a command-line tool written in Python 2.x that can be used
+to download photos from Flickr in batch. flickrurlget itself doesn't
+download photos, but it generates a list of raw photo URLs which can be
+downloaded with a download manager (even with `wget -i').
+"""
+
+# TODO(pts): Add JSON parser (for Python 2.4 and Python 2.5).
+# TODO(pts): Add support for OAuth login (just like flickrdownload).
+# TODO(pts): Add feature to get the list of albums (photosets) of a user.
+# TODO(pts): Sometimes photo URLs have the ?zz=1 suffix to change size.
+#            Handle that, especially with wget.
+#            Add built-in image downloader.
+#            http://code.flickr.net/2010/10/26/the-not-so-new-image-size-medium-640/
+# TODO(pts): Add timeouts for the downloads (probably own urllib?).
+# TODO(pts): Add Windows support (e.g. errno.ENOENT).
+# TODO(pts): Release on pypi (for pip install etc.).
+
+import errno
+import os
+import os.path
+import re
+import sys
+import urllib
+
+
+def get_module_docstring():
+  return __doc__
+
+
+def get_doc(doc=None):
+  if doc is None:
+    doc = get_module_docstring()
+  doc = doc.rstrip()
+  doc = re.sub(r'\A:"\s*#', '', doc, 1)
+  doc = re.sub(r'\n(\ntype python.*)+\nexec python -- .*', '', doc, 1)
+  return doc
+
+
+def tiny_parse_json(data):
+  import json
+
+  def unicode_to_str(obj, encoding='utf-8'):
+    if isinstance(obj, (list, tuple)):
+      return type(obj)(unicode_to_str(v, encoding) for v in obj)
+    elif isinstance(obj, dict):
+      return type(obj)((unicode_to_str(k, encoding), unicode_to_str(v, encoding))
+                       for k, v in obj.iteritems())
+    elif isinstance(obj, unicode):
+      return obj.encode(encoding)
+    else:
+      return obj
+
+  return unicode_to_str(json.loads(data))
+
+
+def read_api_key(filename=None):
+  if filename is None:
+    filename = os.path.join(os.getenv('HOME'), '.flickr_download')
+  if not isinstance(filename, str):
+    raise TypeError
+  try:
+    f = open(filename)
+  except IOError, e:
+    if e[0] == errno.ENOENT:
+      raise ValueError('Could not find API key config file: %s' % (filename,))
+    else:
+      raise ValueError('Could not read API key config file: %s' % e)
+  try:
+    data = f.read()
+  finally:
+    f.close()
+  lines = []
+  api_keys = []
+  for line in data.split('\n'):
+    line = line.strip().lower()
+    if not line.startswith('#'):
+      lines.append(line)
+      # Compatible with flickr_download.
+      if line.startswith('api_key:'):
+        api_keys.append(line.split(':', 1)[1].lstrip())
+  if len(api_keys) == 1:
+    return api_keys[0]
+  elif len(lines) == 1:
+    return lines[0]
+  raise ValueError('Could not parse API key config file: %s' % (filename),)
+
+
+def read_oauth_tokens(filename=None):
+  # TODO(pts): Log in with flickr_download. Copy implementation.
+  if filename is None:
+    filename = os.path.join(os.getenv('HOME'), '.flickr_token')
+  if not isinstance(filename, str):
+    raise TypeError
+  try:
+    f = open(filename)
+  except IOError, e:
+    if e[0] == errno.ENOENT:
+      return None, None
+    raise
+  try:
+    data = f.read()
+  finally:
+    f.close()
+  lines = data.rstrip('\n').split('\n')
+  if len(lines) not in (2, 4):
+    raise ValueError('Could not parse OAuth key config: %s' % (filename),)
+  # (access_token_key, access_token_secret).
+  return (lines[-2], lines[-1])
+
+
+class FlickrApiError(Exception):
+  def __init__(self, code, detail):
+    if not isinstance(code, int):
+      raise TypeError
+    if not isinstance(detail, str):
+      raise TypeError
+    self.args = (code, detail)
+    self.message = 'Code %d: %s' % (code, detail)
+
+  def __str__(self):
+    return self.message
+
+
+class FlickrApiClient(object):
+  __slots__ = ('api_key', 'access_token_key')
+
+  # Example images and collections:
+  #
+  # * https://www.flickr.com/photos/parismadrid/16386660144
+  #   Has large, no original, no option to download.
+  # * https://www.flickr.com/photos/aigle_dore/6672150457
+  #   Has original.
+
+  def __init__(self, api_key, access_token_key=None):
+    if not isinstance(api_key, str):
+      raise TypeError
+    if (access_token_key is not None and
+        not isinstance(access_token_key, str)):
+      raise TypeError
+    self.api_key = api_key
+    self.access_token_key = access_token_key or None
+
+  def call(self, method, **kwargs):
+    if not isinstance(method, str):
+      raise TypeError
+    if sum(not isinstance(v, (str, int, long))
+           for v in kwargs.itervalues()):
+      raise TypeError
+    params = {'method': method, 'format': 'json', 'nojsoncallback': '1',
+              'api_key': self.api_key}
+    if self.access_token_key:
+      # These keys are not needed: oauth_nonce, signature_method,
+      # oauth_timestamp, oauth_signature_method ('HMAC-SHA1'),
+      # oauth_signature.
+      params['oauth_consumer_key'] = self.api_key
+      params['oauth_token'] = self.access_token_key
+    params.update(kwargs)
+    url = ('https://api.flickr.com/services/rest/?' +
+            '&'.join('%s=%s' % (k, urllib.quote_plus(str(v)))
+                     for k, v in sorted(params.iteritems())))
+    f = urllib.urlopen(url)
+    try:
+      data = f.read()
+    finally:
+      f.close()
+    res = tiny_parse_json(data)
+    if res.get('stat') == 'fail':
+      raise FlickrApiError(res.get('code'), res.get('message'))
+    assert res.get('stat') == 'ok', get('stat')
+    assert 'code' not in res
+    assert 'message' not in res
+    res.pop('stat')
+    return res
+
+  # TODO(pts): Rename some instances from photo to image? That would break
+  # up with the Flickr style.
+  def _getphotos(self, **kwargs):
+    kwargs = dict(kwargs)
+    page = kwargs.pop('page', 1)
+    if not isinstance(page, int):
+      raise TypeError
+    assert page >= 1
+    if page > 1:
+      kwargs['page'] = page
+    assert 'method' in kwargs
+    # The maximum is 500. The default is 100.
+    # This seems to be ignored for galleries.
+    kwargs.setdefault('per_page', 500)
+    extras = set(e for e in kwargs.pop('extras', '').split(',') if e)
+    # We need to fetch URLs of all sizes to be able to find the largest.
+    #
+    # Photo source URLs and size suffixes:
+    # https://www.flickr.com/services/api/misc.urls.html
+    extras.update((
+        'url_sq', 'url_t', 'url_s', 'url_q', 'url_m', 'url_n', 'url_z', 'url_c',
+        'url_l', 'url_o'))
+    # Some more to extras: description, license, date_upload, date_taken,
+    # owner_name, icon_server, original_format, last_update, geo, tags,
+    # machine_tags, o_dims, views, media, path_alias.
+    kwargs['extras'] = ','.join(sorted(extras))
+
+    while 1:
+      #print >>sys.stderr, kwargs
+      res = self.call(**kwargs)
+      # Example res: {'photos': {'photo': [...], 'pages': 3, 'total': '234', 'page': 1, 'perpage': 100}}
+      if 'photoset' in res and 'photos' not in res:
+        # For method 'flickr.photosets.getPhotos'.
+        res['photos'] = res.pop('photoset')
+      assert isinstance(res.get('photos'), dict), res
+      assert isinstance(res['photos'].get('photo'), list)
+      photo_objs = res['photos'].pop('photo')
+      #print >>sys.stderr, res['photos']
+      assert isinstance(res['photos'].get('page'), (int, str))
+      got_page = int(res['photos']['page'])
+      if got_page == page - 1:
+        break  # Out of galleries. For groups, we don't need this.
+      assert got_page == page, page
+      # Not needed: assert isinstance(res['photos'].get('total'), (int, str))
+      total = int(res['photos']['total'])
+      had_ids = set()
+      if not photo_objs:  # After last page.
+        break
+      for photo in photo_objs:
+        assert isinstance(photo.get('id'), (int, long, str))
+        photo_id = int(photo.get('id'))
+        if photo_id in had_ids:
+          # In case a new photo has been added while we were fetching a page.
+          continue
+        had_ids.add(photo_id)
+        if 'url_o' in photo:  # Shourtcut.
+          # Example: https://farm1.staticflickr.com/565/21400597771_4373868c0b_o.jpg
+          photo['url'] = photo['url_o']
+        else:  # Find the largest resolution.
+          # Example best_pair: (1024, 'https://farm6.staticflickr.com/5672/23406691662_8662245e7e_b.jpg').
+          # Corresponds to: {'width_l': '1024', 'url_l':  'https://farm6.staticflickr.com/5672/23406691662_8662245e7e_b.jpg'}.
+          best_pair = max(
+              (int(photo[key]), photo['url_' + key[key.find('_') + 1:]])
+              for key in photo if key.startswith('width_'))
+          photo['url'] = best_pair[1]
+        for key in sorted(photo):
+          if (key.startswith('height_') or key.startswith('width_') or
+              key.startswith('url_')):
+            del photo[key]
+        assert isinstance(photo['url'], str)
+        assert (photo['url'].startswith('http://') or
+                photo['url'].startswith('https://'))
+        # View all sizes: https://www.flickr.com/photos/randomonix/245278429/sizes/
+        # photo['pathalias'] can be used in place of photo['owner'].
+        #photo['page_url'] = 'https://www.flickr.com/photos/%s/%s/' % (
+        #    photo['owner'], photo['id'])
+        yield photo
+      page += 1
+      kwargs['page'] = page
+
+  def get_group_id(self, group):
+    # Example group: '92986953@N00'.
+    # Example group: 'cat_motivation'.
+    # Example group: 'https://www.flickr.com/groups/cat_motivation/'.
+    # Example group: 'https://www.flickr.com/groups/92986953@N00/'.
+    if not isinstance(group, str):
+      raise TypeError
+    if group.startswith('http://') or group.startswith('https://'):
+      url = group
+    elif '/' in group:
+      raise ValueError(group)
+    elif '@' in group:
+      return group  # Already a group ID.
+    else:
+      url = 'https://www.flickr.com/groups/' + urllib.quote(group)
+    # Example url: 'https://www.flickr.com/groups/cat_motivation'.
+    # May raise: FlickrApiError(1, 'Group not found').
+    res = self.call('flickr.urls.lookupGroup', url=url)
+    # Example res: {'group': {'groupname': {'_content': 'Cat Motivation'}, 'id': '92986953@N00'}}.
+    assert isinstance(res.get('group'), dict)
+    assert isinstance(res['group'].get('id'), str)
+    return res['group']['id']  # Example: '92986953@N00'.
+
+  def yield_group_photos(self, group):
+    group_id = self.get_group_id(group)
+    # https://www.flickr.com/services/api/flickr.groups.pools.getPhotos.html
+    #
+    # This returns adult (non-safe) photos only when logged in
+    # (access_token_key).
+    kwargs = {'method': 'flickr.groups.pools.getPhotos',
+              'group_id': group_id}
+    for photo in self._getphotos(**kwargs):
+      yield photo
+
+  def get_gallery_id(self, gallery):
+    # Example gallery: '108129086-72157656641788568'.
+    # Example gallery: 'https://www.flickr.com/photos/108161225@N04/galleries/72157656641788568/'.
+    if not isinstance(gallery, str):
+      raise TypeError
+    if gallery.startswith('http://') or gallery.startswith('https://'):
+      url = gallery
+    elif '/' in gallery or '@' in gallery:
+      raise ValueError(gallery)
+    elif '-' in gallery:
+      return gallery  # Already a gallery ID.
+    else:
+      raise ValueError(gallery)
+    # Example url: 'https://www.flickr.com/photos/108161225@N04/galleries/72157656641788568/'.
+    # May raise: FlickrApiError(1, 'Gallery not found').
+    res = self.call('flickr.urls.lookupGallery', url=url)
+    assert isinstance(res.get('gallery'), dict)
+    assert isinstance(res['gallery'].get('id'), str)
+    return res['gallery']['id']  # Example: '108129086-72157656641788568'.
+
+  def yield_gallery_photos(self, gallery):
+    gallery_id = self.get_gallery_id(gallery)
+    # https://www.flickr.com/services/api/flickr.galleries.getPhotos.html
+    kwargs = {'method': 'flickr.galleries.getPhotos',
+              'gallery_id': gallery_id}
+    for photo in self._getphotos(**kwargs):
+      yield photo
+
+  def get_user_id(self, user):
+    # Example user: '40775084@N05'.
+    # Example user: 'katsrcool'.
+    # Example user: 'https://www.flickr.com/photos/40775084@N05/'.
+    # Example user: 'https://www.flickr.com/photos/katsrcool'.
+    if not isinstance(user, str):
+      raise TypeError
+    if user.startswith('http://') or user.startswith('https://'):
+      url = user
+    elif '/' in user:
+      raise ValueError(user)
+    elif '@' in user:
+      return user  # Already a user ID.
+    else:
+      url = 'https://www.flickr.com/photos/' + urllib.quote(user)
+    # Example url: 'https://www.flickr.com/photos/katsrcool'.
+    # May raise: FlickrApiError(1, 'User not found').
+    res = self.call('flickr.urls.lookupUser', url=url)
+    # Example res: {'user': {'username': {'_content': 'Kool Cats Photography over 6 Million Views'}, 'id': '40775084@N05'}}.
+    assert isinstance(res.get('user'), dict)
+    assert isinstance(res['user'].get('id'), str)
+    return res['user']['id']  # Example: '40775084@N05'.
+
+  def yield_user_photostream_photos(self, user):
+    user_id = self.get_user_id(user)
+    # If not logged in (with self.access_token_key), then 'safe_search': 1
+    # is forced silently, and adult (non-safe) photos are not returned.
+    #
+    # Safe search modes: You need not set any safe or moderate photos to
+    # ``restricted''. Flickr's rule of thumb: Boobs and buns are ``moderate'';
+    # genitalia and sexual activity are restricted. Just about everything else
+    # should be ``safe''.
+    kwargs = {'method': 'flickr.people.getPhotos',
+              #'safe_search': 1,  # 'safe'.
+              #'safe_search': 2,  # 'moderate'. Not enough.
+              'safe_search': 3,  # 'restricted'.
+              'user_id': user_id}
+    for photo in self._getphotos(**kwargs):
+      yield photo
+
+  def yield_user_favorites_photos(self, user):
+    user_id = self.get_user_id(user)
+    # This returns adult (non-safe) photos only when logged in
+    # (access_token_key).
+    kwargs = {'method': 'flickr.favorites.getList',
+              'user_id': user_id}
+    for photo in self._getphotos(**kwargs):
+      yield photo
+
+  def get_photoset_id_with_user(self, photoset, user=None):
+    """Returns (photoset_id, user_id) pair, user_id sometimes None."""
+    # Example photoset: 'https://www.flickr.com/photos/100820548@N04/albums/72157659679123873'.
+    if not isinstance(photoset, str):
+      raise TypeError
+    if user is not None and not isinstance(user, str):
+      raise TypeError
+    if user:
+      user_id = self.get_user_id(user)
+    else:
+      user_id = None
+    match = self.PHOTOSET_URL_RE.match(photoset)
+    if match:
+      user_id_in_url = self.get_user_id(match.group(1))
+      if user_id is None:
+        user_id = user_id_in_url
+      else:
+        assert user_id_in_url == user_id, (user_id_in_url, user_id)
+      photoset_id = match.group(2)
+    elif '/' in photoset or '@' in photoset or '-' in photoset:
+      raise ValueError(photoset)
+    else:
+      photoset_id = photoset
+    # Example: ('72157659679123873', '100820548@N04').
+    return photoset_id, user_id
+
+  def yield_photoset_photos(self, photoset, user=None):
+    photoset_id, user_id = self.get_photoset_id_with_user(
+        photoset, user)
+    kwargs = {'method': 'flickr.photosets.getPhotos',
+              'photoset_id': photoset_id,
+              'media': 'photos'}
+    if user_id:
+      # Makes it faster, and returns error if wrong.
+      kwargs['user_id'] = user_id
+    for photo in self._getphotos(**kwargs):
+      yield photo
+
+  def get_photo_id(self, photo):
+    # Example photo: '16393044637'.
+    # Example photo: 'https://www.flickr.com/photos/84935187@N04/16393044637'.
+    if not isinstance(photo, str):
+      raise TypeError
+    match = self.PHOTO_URL_RE.match(photo)
+    if match:
+      return match.group(2)
+    elif '/' in photo or '@' in photo or '-' in photo:
+      raise ValueError(photo)
+    else:
+      return photo  # Already a photo ID.
+
+  def yield_single_photo(self, photo):
+    """The return value is different from other _getphotos."""
+    photo_id = self.get_photo_id(photo)
+    kwargs = {'method': 'flickr.photos.getSizes',
+              'photo_id': photo_id}
+    res = self.call(**kwargs)
+    assert isinstance(res.get('sizes'), dict)
+    assert isinstance(res['sizes'].get('size'), list)
+    size_infos = res['sizes'].pop('size')
+    # Example: (1600, 'https://farm8.staticflickr.com/7401/16393044637_a9938a5307_h.jpg').
+    best_pair = max(
+        (int(size_info['width']) +
+         (size_info['label'].lower() == 'original'), size_info['source'])
+        for size_info in size_infos)
+    res['sizes']['url'] = best_pair[1]
+    # TODO(pts): Call flickr.photos.getInfo if needed to get the title etc.
+    yield res['sizes']
+
+  GALLERY_URL_RE = re.compile(
+      r'https?://www.flickr.com/photos/[^/?#]+/galleries/\d+/?\Z')
+
+  GROUP_URL_RE = re.compile(
+      r'https?://www.flickr.com/groups/[^/?#]+(?:/pool/(?:page\d+)?|/|)\Z')
+
+  USER_PHOTOSTREAM_URL_RE = re.compile(
+      r'https?://www.flickr.com/photos/[^/?#]+/?\Z')
+
+  USER_FAVORITES_URL_RE = re.compile(
+      r'https?://www.flickr.com/photos/[^/?#]+/favorites\Z')
+
+  PHOTOSET_URL_RE = re.compile(
+      r'https?://www.flickr.com/photos/([^/?#]+)/(?:albums|sets)/([^/?#]+)\Z')
+
+  PHOTO_URL_RE = re.compile(
+      r'https?://www.flickr.com/photos/([^/?#]+)/([^/?#]+)(?:/in/[^?#]+|/|)\Z')
+
+  def yield_photos(self, url):
+    if not isinstance(url, str):
+      raise TypeError
+    match = self.GALLERY_URL_RE.match(url)
+    if match:
+      it = self.yield_gallery_photos(url)
+    else:
+      match = self.GROUP_URL_RE.match(url)
+      if match:
+        it = self.yield_group_photos(url)
+      else:
+        match = self.USER_PHOTOSTREAM_URL_RE.match(url)
+        if match:
+          it = self.yield_user_photostream_photos(url)
+        else:
+          match = self.USER_FAVORITES_URL_RE.match(url)
+          if match:
+            it = self.yield_user_favorites_photos(url)
+          else:
+            match = self.PHOTOSET_URL_RE.match(url)
+            if match:
+              it = self.yield_photoset_photos(url)
+            else:
+              match = self.PHOTO_URL_RE.match(url)
+              if match:
+                it = self.yield_single_photo(url)
+              else:
+                raise ValueError('Unrecognized Flickr URL: %s' % (url,))
+    for photo in it:
+      yield photo
+
+
+def main(argv):
+  if len(argv) < 2 or argv[1] == '--help':
+    print get_doc()
+    sys.exit(0)
+  try:
+    api_key = read_api_key()
+  except ValueError, e:
+    print >>sys.stderr, (
+        'fatal: %s\n\nPlease follow the installation instructions '
+        'to obtain and set up an API key.' % e)
+    sys.exit(3)
+  oauth_tokens = read_oauth_tokens()
+  if oauth_tokens[0]:
+    print >>sys.stderr, 'info: logging in to Flickr'
+  else:
+    # We can't show non-public or non-safe photos without logging in to
+    # Flickr, because Flickr doesn't return them.
+    print >>sys.stderr, (
+        'info: using Flickr as anonymous, '
+        'showing only public and safe photos')
+  fac = FlickrApiClient(api_key, oauth_tokens[0])
+  for url in argv[1:]:
+    for photo in fac.yield_photos(url):
+      print photo['url']
+
+
+if __name__ == '__main__':
+  sys.exit(main(sys.argv))

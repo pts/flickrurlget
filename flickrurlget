@@ -292,8 +292,13 @@ class FlickrApiClient(object):
       #print >>sys.stderr, res['photos']
       assert isinstance(res['photos'].get('page'), (int, str))
       got_page = int(res['photos']['page'])
+      got_pages = res['photos'].get('pages')
+      if got_pages is not None:
+        got_pages = int(got_pages)
       if got_page == page - 1:
-        break  # Out of galleries. For groups, we don't need this.
+        break  # Out of galleries. Groups don't need this.
+      if got_pages is not None and got_page > got_pages:
+        break  # Out of pages in a user's photostream. Groups don't need this.
       assert got_page == page, page
       # Not needed: assert isinstance(res['photos'].get('total'), (int, str))
       total = int(res['photos']['total'])

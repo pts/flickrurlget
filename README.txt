@@ -165,7 +165,7 @@ Why is flickrurlget better than https://github.com/beaufour/flickr-download ?
 * Has user ID, group ID and photoset ID discovery: the user doesn't
   have to do manual ID lookups before running the tool.
 * Uses only standard Python modules, no other dependencies.
-* Better compatibility with old Python: works with 2.6 in addition to 2.7.
-  (2.4 and 2.5 are not supperted because of `import json'.)
+* Better compatibility with old Python: works with 2.7, 2.6, 2.5 and 2.4;
+  not only 2.7.
 
 __EOF__

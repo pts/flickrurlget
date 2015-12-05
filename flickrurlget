@@ -15,7 +15,6 @@ download photos, but it generates a list of raw photo URLs which can be
 downloaded with a download manager (even with `wget -i').
 """
 
-# TODO(pts): Add JSON parser (for Python 2.4 and Python 2.5).
 # TODO(pts): Add support for OAuth login (just like flickrdownload).
 # TODO(pts): Add feature to get the list of albums (photosets) of a user.
 # TODO(pts): Sometimes photo URLs have the ?zz=1 suffix to change size.
@@ -47,8 +46,36 @@ def get_doc(doc=None):
   return doc
 
 
-def tiny_parse_json(data):
-  import json
+# --- JSON parser (to stand in for `import json' in older Pythons).
+
+# Tis a bit more permissive (in the number syntax) than the grammar on
+# http://json.org/ . This also merges multiple operator tokens (without a
+# space) to one.
+JSON_TOKEN_RE = re.compile(
+    r'(\s+)|'  # Whitespace.
+    r'("([^\\"]+|\\(?:["\\/bfnrt]|u[0-9a-f]{4}))*")|'  # String literal.
+    r'(true|false|null)|'  # Named values.
+    r'[{}\[\],:]+|'  # Operators.
+    r'[-+]?(?:\d+(?:[.]\d*)?|[.]\d+)(?:[eE][-+]?\d+)?')  # Number literal.
+
+JSON_NAMED_VALUES = {'true': 'True', 'false': 'False', 'null': 'None'}
+
+JSON_STRING_PART_RE = re.compile(r'[^\\]+|\\(?:["\\/bfnrt]|u[0-9a-f]{4})')
+
+try:
+  import json as builtin_json  # From Python 2.6.
+except ImportError:
+  builtin_json = None
+
+try:
+  import ast as builtin_ast  # From Python 2.6.
+except ImportError:
+  builtin_ast = None
+
+
+def parse_json(data):
+  if not isinstance(data, str):
+    raise TypeError
 
   def unicode_to_str(obj, encoding='utf-8'):
     if isinstance(obj, (list, tuple)):
@@ -61,7 +88,48 @@ def tiny_parse_json(data):
     else:
       return obj
 
-  return unicode_to_str(json.loads(data))
+  # Verified manually that custom_parse_json is the same as json.loads (from
+  # Python 2.6).
+  def custom_parse_json(data):
+    output = []
+    i = 0
+    while i < len(data):
+      match = JSON_TOKEN_RE.match(data, i)
+      if not match:
+        raise ValueError('JSON syntax error: %r' % (data[i : i + 16]))
+      i = match.end()
+      if match.group(1):  # Whitespace.
+        pass
+      elif match.group(2):  # String literal.
+        output.append('u')
+        if '\\/' not in match.group(2):
+          output.append(match.group(2))  # Fortunately same as Python syntax.
+        else:
+          for match2 in JSON_STRING_PART_RE.finditer(match.group(2)):
+            if match2.group() == '\\/':
+              output.append('/')
+            else:
+              output.append(match2.group())
+      elif match.group(3):
+        output.append(JSON_NAMED_VALUES[match.group(3)])
+      else:
+        # Fortunately punctuation and number literals are also the same as
+        # Python syntax.
+        output.append(match.group())
+    data = ''.join(output)
+    if builtin_ast:
+      return builtin_ast.literal_eval(data)
+    else:
+      # This is still safe because of the regexp scanning above.
+      return eval(data, {})
+
+  if builtin_json:
+    return unicode_to_str(builtin_json.loads(data))  # Faster.
+  else:
+    return unicode_to_str(custom_parse_json(data))
+
+
+# ---
 
 
 def read_api_key(filename=None):
@@ -174,7 +242,7 @@ class FlickrApiClient(object):
       data = f.read()
     finally:
       f.close()
-    res = tiny_parse_json(data)
+    res = parse_json(data)
     if res.get('stat') == 'fail':
       raise FlickrApiError(res.get('code'), res.get('message'))
     assert res.get('stat') == 'ok', get('stat')

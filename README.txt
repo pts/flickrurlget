@@ -23,7 +23,7 @@ Features:
 Requirements:
 
 * A Unix systems (such as Linux or Mac OS X). Windows is not supported yet.
-* Python 2.6 or Python 2.7 with the standard ssl module. Earlier Python 2.x
+* Python 2.7, 2.6, 2.5 or 2.4 with the standard ssl module. Earlier Python 2.x
   is not supported yet. Python 3 is not supported.
 * A Flickr API key (can be obtained online, see below).
 * Optional: To download the actual photos, a download manager (something as
@@ -52,11 +52,13 @@ Installation:
 
      $ echo api_secret: 16_CHAR_SECRET__ >>~/.flickr_download
 
-2. Install Python 2.6 or 2.7. It should work using the commands `python2.7',
-   `python2.6' or `python'. To double check, run this command, and check
-    that it prints True in the end:
+2. Install Python 2.7, 2.6, 2.5 or 2.4.
 
-     $ python -c 'vi = "%s.%s" % __import__("sys").version_info[:2]; print("%s %s" % (vi, vi in ("2.6", "2.7")))'
+   After installation it should work using the commands `python2.7',
+   `python2.6', `python2.5', `python2.4' or `python'. To double check, run
+   this command, and check that it prints True in the end:
+
+     $ python -c 'vi = "%s.%s" % __import__("sys").version_info[:2]; print("%s %s" % (vi, vi in ("2.7", "2.6", "2.5", "2.4")))'
      2.7 True
 
 3. Download the flickrurlget script and install it somewhere on your $PATH.

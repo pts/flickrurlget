@@ -25,32 +25,47 @@ Requirements:
 * A Unix systems (such as Linux or Mac OS X). Windows is not supported yet.
 * Python 2.7, 2.6, 2.5 or 2.4 with the standard ssl module. Earlier Python 2.x
   is not supported yet. Python 3 is not supported.
-* A Flickr API key (can be obtained online, see below).
+* A Flickr API key and maybe API secret (can be obtained online, see below).
 * Optional: To download the actual photos, a download manager (something as
   simple as wget will do).
-* Optional: To get non-public and adult (non-safe) photos, a Flickr account.
+* Optional: To get non-public and/or adult (non-safe) photos, a Flickr account.
 
 Installation:
 
-1. Obtain your flickr API key. The official way is to obtain online:
+1. Obtain your flickr API key (and maybe API secret).
+   The official way is to obtain them online:
    https://www.flickr.com/services/api/
 
    The API key is a 32-character long hex string, and the corresponding API
    secret (not needed) is a 16-character long hex string.
 
-   If that's too cumbersome for you, there is one in
+   For read-only access to public and safe (non-adult) photos on Flickr,
+   all you need as an API key. For read-write access or for getting non-public
+   and/or adult (non-safe) photos from Flicker, you need both an API key and
+   an API secret.
+
+   If the official way is too cumbersome for you, there is an API key in
    http://stackoverflow.com/a/28200449/97248
 
    There is an API key and and API secret in the file
    https://upsilon.cc/~zack/blog/posts/2006/11/flickr_download/flickr_download.rb
 
-   Save the API key to the file ~/.flickr_download in the format:
+   Save the API key to the file ~/.flickr_download in the format (don't forget
+   to change the command to include your API key):
 
      $ echo api_key: 32_CHARACTER_API_KEY_OBTAINED___ >~/.flickr_download
+     $ chmod 600 ~/.flickr_download
 
-   It's not necessary to save the API secret, which would look like this:
+   Here is how to append the API secret to the config file (don't forget to
+   change the command to include your API secret):
 
      $ echo api_secret: 16_CHAR_SECRET__ >>~/.flickr_download
+
+   If you don't have an API secret, you may want to append the dummy value
+   to the config file, so other tools (such as flickr_download) would also
+   work:
+
+     $ echo api_secret: dummy >>~/.flickr_download
 
 2. Install Python 2.7, 2.6, 2.5 or 2.4.
 
@@ -84,26 +99,39 @@ Installation:
    http://www.flickr.com/ . You can also use your existing Yahoo account to
    sign in.
 
-   To make flickrurlget login on behalf of you, you need to log in in your
+   To make flickrurlget log in on behalf of you, you need to log in in your
    browser on http://www.flickr.com/ first, and then set up the OAuth tokens
-   (credentials) in the file ~/.flickr_token to be used by flickrurlget.
+   (credentials) in the file ~/.flickr_token to be used by flickrurlget. To
+   do so, run the flickrapilogin tool, which can be downloaded from the same
+   source as flickrurlget. Just run it without arguments:
 
-   Currently you need to use an external tool flickr_download (available
-   from https://pypi.python.org/pypi/flickr_download and
-   https://github.com/beaufour/flickr-download) setting up the file
-   ~/.flickr_token . This is a one-step process, and also can be done on a
-   different computer with a web browser. Once installed, run:
+     $ flickrapilogin
 
-     $ flickr_download -t
+   If you haven't installed it, you may need the ./ prefix to run it:
 
-   This will tell you what to do in your web browsers, and if you follow the
+     $ ./flickrapilogin
+
+   Follow the interactive instructions displayed by the program.
+   It will tell you what to do in your web browsers, and if you follow the
    instructions, it will succeed and create the file ~/.flickr_token, with
-   hex keys, something like this:
+   hex keys, something like this, _without_ a trailing newline:
 
      aaaaaaaaaaaaaaa42-bbbbbbbbbbbbbb43
      cccccccccccccc44
 
-How to use:
+   Alternatively, it's also possible to log in using the flickr_download
+   tool instead. If you have it installed, run it like this:
+
+     $ flickr_download -t
+
+   Logging in like this needs to be done only once in a lifetime, it also
+   can be done on a different computer with a web browser, and the
+   ~/.flickr_token file can be copied over.
+
+   There is no point logging in multiple times, because the contents of
+   ~/.flickr_token will be the same after re-login.
+
+How to use flickrurlget:
 
 1. Browse and use Flickr in your web browser. If you find something
    interesting, keep it open in a browser tab.

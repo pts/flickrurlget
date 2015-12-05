@@ -1,0 +1,303 @@
+#! /bin/sh
+# by pts@fazekas.hu at Sat Dec  5 14:23:08 CET 2015
+
+""":" #flickrapilogin: Tool to log in to Flickr using the OAuth API
+
+type python2.7 >/dev/null 2>&1 && exec python2.7 -- "$0" ${1+"$@"}
+type python2.6 >/dev/null 2>&1 && exec python2.6 -- "$0" ${1+"$@"}
+type python2.5 >/dev/null 2>&1 && exec python2.5 -- "$0" ${1+"$@"}
+type python2.4 >/dev/null 2>&1 && exec python2.4 -- "$0" ${1+"$@"}
+exec python -- ${1+"$@"}; exit 1
+
+flickrapilogin is a command-line tool written in Python 2.x that can be used
+log in to Flickr using the OAuth API, and save the OAuth tokens to
+~/.flickr_token . Other tools such as flickrurlget and flickr_download read
+these files, thus they can read your flickr data. The benefit is that these
+tools will be able to get non-public and adult (non-safe) photos as well.
+
+See the installation instructions of the flickrurlget tool on when and how
+to run flickrapilogin.
+"""
+
+import binascii
+import hmac
+import os
+import os.path
+import random
+import re
+import sys
+import time
+import urllib
+
+try:
+  from hashlib import sha1 as hashlib_sha1  # Python >=2.5.
+except ImportError:
+  import sha as hashlib_sha1  # Python 2.4.
+
+
+def get_module_docstring():
+  return __doc__
+
+
+def get_doc(doc=None):
+  if doc is None:
+    doc = get_module_docstring()
+  doc = doc.rstrip()
+  doc = re.sub(r'\A:"\s*#', '', doc, 1)
+  doc = re.sub(r'\n(\ntype python.*)+\nexec python -- .*', '', doc, 1)
+  return doc
+
+
+def read_api_keys(filename=None):
+  if filename is None:
+    filename = os.path.expanduser('~/.flickr_download')
+  if not isinstance(filename, str):
+    raise TypeError
+  try:
+    f = open(filename)
+  except IOError, e:
+    if e[0] == errno.ENOENT:
+      raise ValueError('Could not find API key config file: %s' % (filename,))
+    else:
+      raise ValueError('Could not read API key config file: %s' % e)
+  try:
+    data = f.read()
+  finally:
+    f.close()
+  lines = []
+  api_keys = []
+  api_secrets = []
+  for line in data.split('\n'):
+    line = line.strip().lower()
+    if not line.startswith('#'):
+      lines.append(line)
+      # Compatible with flickr_download.
+      if line.startswith('api_key:'):
+        api_keys.append(line.split(':', 1)[1].lstrip())
+      if line.startswith('api_secret:'):
+        api_secrets.append(line.split(':', 1)[1].lstrip())
+  if len(api_keys) == 1 and len(api_secrets) == 1:
+    return api_keys[0], api_secrets[0]
+  raise ValueError('Could not parse API key config file: %s' % (filename),)
+
+
+def oauth_sign_request_sha1(
+    url, api_key, api_secret, token_secret,
+    callback_url, request_key, oauth_verifier):
+
+  def escape(s):
+    """Escape a URL including any /."""
+    return urllib.quote(s, safe='~')
+
+  params = {}
+  params['oauth_signature_method'] = 'HMAC-SHA1'
+  params['oauth_consumer_key'] = str(api_key)
+  params['oauth_timestamp'] = str(int(time.time()))
+  params['oauth_nonce'] = (
+      '%04d%04d' % (random.randrange(0, 9999), random.randrange(0, 9999)))
+  if callback_url:
+    params['oauth_callback'] = callback_url
+    params['oauth_version'] = '1.0'
+  if request_key:
+    params['oauth_token'] = request_key
+  if request_key:
+    params['oauth_verifier'] = oauth_verifier
+  key = '%s&%s' % (escape(api_secret), escape(token_secret))
+  # Escape keys and values before sorting.
+  # Sort lexicographically, first after key, then after value.
+  assert 'oauth_signature' not in params
+  key_values = sorted((escape(k), escape(v))
+                      for k, v in params.iteritems())
+  normalized_url = url
+  i = normalized_url.find('?')
+  if i >= 0:
+    normalized_url = normalized_url[:i]
+  # We should append of '/' to normalized_url to normalize it.
+  # We should remove port number :80 from http:// and :433 from https://.
+  assert '?' not in normalized_url
+  # Combine key value pairs into a string.
+  data = 'GET&%s&%s' % (
+      escape(normalized_url),
+      escape('&'.join('%s=%s' % (k, v) for k, v in key_values)))
+  params['oauth_signature'] = binascii.b2a_base64(
+      hmac.new(key, data, hashlib_sha1).digest()).rstrip('\n')
+  qs = '&'.join(sorted('%s=%s' % (escape(str(k)), escape(str(v)))
+                       for k, v in params.iteritems()))
+  signed_url = '%s?%s' % (normalized_url, qs)
+  f = urllib.urlopen(signed_url)
+  try:
+    data = f.read()
+  finally:
+    f.close()
+  res = {}
+  for spec in data.strip().split('&'):
+    key, value = spec.split('=', 1)
+    key = urllib.unquote(key)
+    value = urllib.unquote(value)
+    res[key] = value
+  if 'oauth_token' not in res or 'oauth_token_secret' not in res:
+    raise RuntimeError('Signing failed: %r' % (data,))
+  return res['oauth_token'], res['oauth_token_secret']
+
+
+def create_request_token(api_key, api_secret, perms='read'):
+  if not api_key or not api_secret:
+    raise ValueError('API keys have not been set.')
+  callback_url = ('https://api.flickr.com/services/rest/'
+                  '?method=flickr.test.echo&api_key=%s&format=json' % api_key)
+  request_key, request_secret = oauth_sign_request_sha1(
+      'https://www.flickr.com/services/oauth/request_token',
+      api_key, api_secret, '', callback_url, '', '')
+  authorization_url ='%s?oauth_token=%s&perms=%s' % (
+      'https://www.flickr.com/services/oauth/authorize',
+      request_key, perms)
+  return authorization_url, request_key, request_secret
+
+
+def apply_oauth_verifier(
+    oauth_verifier, api_key, api_secret, request_key, request_secret):
+  if not isinstance(oauth_verifier, str) or not isinstance(request_key, str):
+    raise TypeError
+  if not oauth_verifier or not request_key:
+    raise ValueError
+  return oauth_sign_request_sha1(
+      'https://www.flickr.com/services/oauth/access_token',
+      api_key, api_secret, request_secret, '', request_key, oauth_verifier)
+
+
+OAUTH_PARAM_RE = re.compile(r'[0-9a-fA-F]{5,}\Z')
+
+
+OAUTH_VERIFIER_PARAM_RE = re.compile(
+    r'[&?]oauth_verifier=([0-9a-fA-F]{5,})(?:\Z|&)')
+
+# JSON, XML, YAML, URL and other formats.
+OAUTH_VERIFIER_SPEC_RE = re.compile(
+    r'\boauth_verifier[->"\':{\[\s=]+([0-9a-fA-F]{5,})(?:\Z|["\'\s&<])')
+
+
+def parse_oauth_verifier(data):
+  data = data.strip()
+  match = OAUTH_PARAM_RE.match(data)
+  if match:
+    return data.lower()
+  if '\n' not in data and (
+      data.startswith('http://') or data.startswith('https://')):
+    match = OAUTH_VERIFIER_PARAM_RE.search(data)
+    if not match:
+      raise ValueError('Could not find valid &oauth_verifier=... in URL.')
+    return match.group(1).lower()
+  data = data.replace('"_content":', '')
+  match = OAUTH_VERIFIER_SPEC_RE.search(data)
+  if not match:
+    raise ValueError('Could not find valid oauth_verifier in body.')
+  return match.group(1).lower()
+
+
+assert 'aaaaaaaaaaaaaa34' == parse_oauth_verifier('aaaaaaaaaaaaAA34')
+assert 'aaaaaaaaaaaaaa34' == parse_oauth_verifier('https://api.flickr.com/services/rest/?method=flickr.test.echo&api_key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa31&format=json&oauth_token=aaaaaaaaaaaaaaa32-aaaaaaaaaaaaaa33&oauth_verifier=aaaaaaaaaaaaaa34')
+assert 'aaaaaaaaaaaaaa34' == parse_oauth_verifier('jsonFlickrApi({"method":{"_content":"flickr.test.echo"},"api_key":{"_content":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa31"},"format":{"_content":"json"},"oauth_token":{"_content":"aaaaaaaaaaaaaaa32-aaaaaaaaaaaaaa33"},"oauth_verifier":{"_content":"aaaaaaaaaaaaaa34"},"stat":"ok"})')
+
+
+def flickr_login(filename=None, do_force=False):
+  if filename is None:
+    filename = os.path.expanduser('~/.flickr_token')
+  if not isinstance(filename, str):
+    raise TypeError
+  if not do_force and os.path.exists(filename):
+    print >>sys.stderr, (
+        'error: OAuth token file %r exists, rerun with --force to re-login.\n'
+        'Re-login is usually not needed, because it typically generates\n'
+        'the same OAuth token.' % (filename,))
+    sys.exit(3)
+  print >>sys.stderr, 'info: Using OAuth token file: %s' % (filename,)
+
+  try:
+    api_key, api_secret = read_api_keys()
+  except ValueError, e:
+    print >>sys.stderr, (
+        'fatal: %s\n\nPlease follow the installation instructions '
+        'to obtain and set up an API key.' % e)
+    sys.exit(3)
+  if api_key and (not api_secret or api_secret == 'dummy'):
+    print >>sys.stderr, (
+        'fatal: Flickr login needs an API secret in addition to the API key.\n\n'
+        'Please follow the installation instructions '
+        'to obtain and set up an API secret.')
+    sys.exit(3)
+  # Example authorization_url: 'https://www.flickr.com/services/oauth/authorize?oauth_token=aaaaaaaaaaaaaaa52-bbbbbbbbbbbbbb53&perms=read'
+  authorization_url, request_key, request_secret = create_request_token(
+      api_key, api_secret)
+  print >>sys.stderr, """
+1. In your browser (preferably Firefox or Chrome), visit
+   http://www.flickr.com/ , do Sign In.
+
+2. Visit this link in the same browser:
+   %s
+
+3. Authorize the Access of this tool to your account
+   (by clicking ``OK, I\'LL AUTHORIZE IT\'\').
+
+4. The web browser is now at a page whose link starts with
+   api.flickr.com/services/rest and its pages starts with jsonFlickrApi. The
+   relevant part is the oauth_verifier field in there (either in the link or
+   on the page).
+
+   Copy-paste either the link or the full contents of the page to here, and
+   press <Enter>.
+""" % authorization_url
+  while 1:
+    try:
+      response = raw_input().strip()
+    except EOFError:
+      print >>sys.stderr, '\ninfo: Got EOF, aborting.'
+      sys.exit(4)
+    except KeyboardInterrupt:
+      print >>sys.stderr, '\ninfo: Got Ctrl-<C>, aborting.'
+      sys.exit(4)
+    if response.lower() in ('exit', 'quit', 'abort', 'bye'):
+      print >>sys.stderr, 'info: Aborting on user request.'
+      sys.exit(4)
+    if response:
+      try:
+        oauth_verifier = parse_oauth_verifier(response)
+      except ValueError, e:
+        print >>sys.stderr, (
+            '\nError (%s), please copy-paste again, or type exit to exit.\n')
+      assert oauth_verifier
+      break
+    else:
+      print >>sys.stderr, (
+          '\nNo value pasted, please copy-paste again, or type exit to exit.\n')
+  # Example oauth_verifier: 'aaaaaaaaaaaaaa34'.
+  print >>sys.stderr, '\ninfo: Applying oauth_verifier: %s' % (oauth_verifier,)
+  # oauth_verifier seems to be different every time, but the
+  # contents of ~/.flickr_token will be the same.
+  access_key, access_secret = apply_oauth_verifier(
+      oauth_verifier, api_key, api_secret, request_key, request_secret)
+  # No trailing \n, flickr_api.auth.AuthHandler.fromfile isn't able to parse
+  # that.
+  data = '%s\n%s' % (access_key, access_secret)
+  filename_new = filename + '.new'
+  f = open(filename_new, 'w')
+  try:
+    os.chmod(filename_new, 0600)  # Other users shouldn't be able to read it.
+    f.write(data)
+  finally:
+    f.close()
+  os.rename(filename_new, filename)  # Replace atomically.
+  print >>sys.stderr, (
+      'info: Login to Flickr successful, OAuth token saved to file: %s' %
+      (filaname,))
+
+
+def main(argv):
+  if len(argv) >= 2 and argv[1] == '--help':
+    print get_doc()
+    sys.exit(0)
+  do_force = len(argv) > 1 and argv[1] == '--force'
+  flickr_login(filename=None, do_force=do_force)
+
+
+if __name__ == '__main__':
+  sys.exit(main(sys.argv))

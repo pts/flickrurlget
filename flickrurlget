@@ -521,7 +521,7 @@ class FlickrApiClient(object):
       r'https?://www.flickr.com/photos/[^/?#]+/galleries/\d+/?\Z')
 
   GROUP_URL_RE = re.compile(
-      r'https?://www.flickr.com/groups/[^/?#]+(?:/pool/(?:page\d+)?|/|)\Z')
+      r'https?://www.flickr.com/groups/[^/?#]+(?:/pool/(?:[^/?#]+)?/?|/|)\Z')
 
   USER_PHOTOSTREAM_URL_RE = re.compile(
       r'https?://www.flickr.com/photos/[^/?#]+/?\Z')

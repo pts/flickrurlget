@@ -24,6 +24,7 @@ downloaded with a download manager (even with `wget -i').
 # TODO(pts): Add timeouts for the downloads (probably own urllib?).
 # TODO(pts): Add Windows support (e.g. errno.ENOENT).
 # TODO(pts): Release on pypi (for pip install etc.).
+# TODO(pts): Continue after errors in one arg.
 
 import errno
 import os
@@ -337,6 +338,33 @@ class FlickrApiClient(object):
       page += 1
       kwargs['page'] = page
 
+  def get_group_url(self, group):
+    """Returns the named group URL. Some groups have their ID in the URL."""
+    # Example group: '92986953@N00'.
+    # Example group: 'cat_motivation'.
+    # Example group: 'https://www.flickr.com/groups/cat_motivation/'.
+    # Example group: 'https://www.flickr.com/groups/92986953@N00/'.
+    if not isinstance(group, str):
+      raise TypeError
+    if group.startswith('http://') or group.startswith('https://'):
+      items = group.split('/')
+      i = 0
+      while i < len(items) - 1 and items[i] != 'groups':
+        i += 1
+      if i >= len(items) - 1:
+        raise ValueError('Invalid group URL: %s' % (url,))
+      group = items[i + 1]
+    if '/' in group:
+      raise ValueError(group)
+    if '@' not in group:
+      return 'https://www.flickr.com/groups/%s/' % group
+    # May raise: FlickrApiError(1, 'Group not found').
+    res = self.call('flickr.urls.getGroup', group_id=group)
+    # Example res: {'group': {'url': 'https://www.flickr.com/groups/cat_motivation/', 'nsid': '92986953@N00'}}
+    assert isinstance(res.get('group'), dict)
+    assert isinstance(res['group'].get('url'), str)
+    return res['group']['url']
+
   def get_group_id(self, group):
     # Example group: '92986953@N00'.
     # Example group: 'cat_motivation'.
@@ -588,9 +616,13 @@ def main(argv):
         'info: using Flickr as anonymous, '
         'showing only public and safe photos')
   fac = FlickrApiClient(api_key, oauth_tokens[0])
-  for url in argv[1:]:
-    for photo in fac.yield_photos(url):
-      print photo['url']
+  if len(argv) > 1 and argv[1] == '--group_url':
+    for group in argv[2:]:
+      print fac.get_group_url(group)
+  else:
+    for url in argv[1:]:
+      for photo in fac.yield_photos(url):
+        print photo['url']
 
 
 if __name__ == '__main__':

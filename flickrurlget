@@ -555,10 +555,10 @@ class FlickrApiClient(object):
       r'https?://www.flickr.com/photos/[^/?#]+/?\Z')
 
   USER_FAVORITES_URL_RE = re.compile(
-      r'https?://www.flickr.com/photos/[^/?#]+/favorites\Z')
+      r'https?://www.flickr.com/photos/[^/?#]+/favorites/?\Z')
 
   PHOTOSET_URL_RE = re.compile(
-      r'https?://www.flickr.com/photos/([^/?#]+)/(?:albums|sets)/([^/?#]+)\Z')
+      r'https?://www.flickr.com/photos/([^/?#]+)/(?:albums|sets)/([^/?#]+)/?\Z')
 
   PHOTO_URL_RE = re.compile(
       r'https?://www.flickr.com/photos/([^/?#]+)/([^/?#]+)(?:/in/[^?#]+|/|)\Z')

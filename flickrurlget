@@ -25,6 +25,7 @@ downloaded with a download manager (even with `wget -i').
 # TODO(pts): Add Windows support (e.g. errno.ENOENT).
 # TODO(pts): Release on pypi (for pip install etc.).
 # TODO(pts): Continue after errors in one arg.
+# TODO(pts): Try to restore original filename -- do we have the info?
 
 import errno
 import os

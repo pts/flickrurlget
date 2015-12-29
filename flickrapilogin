@@ -288,7 +288,7 @@ def flickr_login(filename=None, do_force=False):
   os.rename(filename_new, filename)  # Replace atomically.
   print >>sys.stderr, (
       'info: Login to Flickr successful, OAuth token saved to file: %s' %
-      (filaname,))
+      (filename,))
 
 
 def main(argv):

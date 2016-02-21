@@ -15,6 +15,8 @@ download photos, but it generates a list of raw photo URLs which can be
 downloaded with a download manager (even with `wget -i').
 """
 
+# TODO(pts): Unify flickrurlget and flickrapilogin. Make flickrapilogin save
+#            to default location (no need to check file).
 # TODO(pts): Add support for OAuth login (just like flickrdownload).
 # TODO(pts): Add feature to get the list of albums (photosets) of a user.
 # TODO(pts): Sometimes photo URLs have the ?zz=1 suffix to change size.
@@ -395,6 +397,8 @@ class FlickrApiClient(object):
     #
     # This returns adult (non-safe) photos only when logged in
     # (access_token_key).
+    #
+    # flickr.groups.pools.search can also be used with 'group_id'.
     kwargs = {'method': 'flickr.groups.pools.getPhotos',
               'group_id': group_id}
     for photo in self._getphotos(**kwargs):
@@ -515,6 +519,39 @@ class FlickrApiClient(object):
     for photo in self._getphotos(**kwargs):
       yield photo
 
+  SORT_KEYS = (
+      'date-posted-asc', 'date-posted-desc', 'date-taken-asc', 'date-taken-desc',
+      'interestingness-desc', 'interestingness-asc', 'relevance')
+
+  def yield_tagged_photos(self, tag, sort_key=None):
+    if tag.startswith('http://') or tag.startswith('https://'):
+      match = self.TAG_URL_RE.match(tag)
+      if not match:
+        raise ValueError(tag)
+      tag = match.group(1)
+      if match.group(2) and sort_key is None:
+        sort_key = 'interestingness-desc'
+    #if '/' in tag or '@' in tag or ',' in tag or tag.startswith('-'):
+    #  raise ValueError(tag)
+    if sort_key is not None and sort_key not in self.SORT_KEYS:
+      raise ValueError(sort_key)
+    # TODO(pts): Please note that Flickr will return at most the first 4,000
+    # results for any given search query. If this is an issue, we recommend
+    # trying a more specific query. Flickr returns the correct count, but
+    # above 4000 it will start returning something like the 1st page of the
+    # results. Use manual pagination by a date restrict: min_upload_date,
+    # max_upload_date.
+    kwargs = {'method': 'flickr.photos.search',
+              'tags': tag,  # Can be comma-separated with leading -.
+              'tag_mode': 'all',  # Default: 'any'.
+              'safe_search': 3,  # 'restricted'.
+              'media': 'photos'}
+    if sort_key:
+      # The default is 'date-posted-desc'.
+      kwargs['sort'] = str(sort_key)
+    for photo in self._getphotos(**kwargs):
+      yield photo
+
   def get_photo_id(self, photo):
     # Example photo: '16393044637'.
     # Example photo: 'https://www.flickr.com/photos/84935187@N04/16393044637'.
@@ -547,22 +584,29 @@ class FlickrApiClient(object):
     yield res['sizes']
 
   GALLERY_URL_RE = re.compile(
-      r'https?://www.flickr.com/photos/[^/?#]+/galleries/\d+/?\Z')
+      r'https?://www[.]flickr[.]com/photos/[^/?#]+/galleries/\d+/?\Z')
 
   GROUP_URL_RE = re.compile(
-      r'https?://www.flickr.com/groups/[^/?#]+(?:/pool/(?:[^/?#]+)?/?|/|)\Z')
+      r'https?://www[.]flickr[.]com/'
+      r'groups/[^/?#]+(?:/pool/(?:[^/?#]+)?/?|/|)\Z')
 
   USER_PHOTOSTREAM_URL_RE = re.compile(
-      r'https?://www.flickr.com/photos/[^/?#]+/?\Z')
+      r'https?://www[.]flickr[.]com/photos/[^/?#]+/?\Z')
 
   USER_FAVORITES_URL_RE = re.compile(
-      r'https?://www.flickr.com/photos/[^/?#]+/favorites/?\Z')
+      r'https?://www[.]flickr[.]com/photos/[^/?#]+/favorites/?\Z')
 
   PHOTOSET_URL_RE = re.compile(
-      r'https?://www.flickr.com/photos/([^/?#]+)/(?:albums|sets)/([^/?#]+)/?\Z')
+      r'https?://www[.]flickr[.]com/'
+      r'photos/([^/?#]+)/(?:albums|sets)/([^/?#]+)/?\Z')
 
   PHOTO_URL_RE = re.compile(
-      r'https?://www.flickr.com/photos/([^/?#]+)/([^/?#]+)(?:/in/[^?#]+|/|)\Z')
+      r'https?://www[.]flickr[.]com/'
+      r'photos/([^/?#]+)/([^/?#]+)(?:/in/[^?#]+|/|)\Z')
+
+  TAG_URL_RE = re.compile(
+      r'https?://www[.]flickr[.]com/(?:photos/)?tags/([^?#/]+)'
+      r'(/interesting)?/?\Z')
 
   def yield_photos(self, url):
     if not isinstance(url, str):
@@ -587,11 +631,16 @@ class FlickrApiClient(object):
             if match:
               it = self.yield_photoset_photos(url)
             else:
-              match = self.PHOTO_URL_RE.match(url)
+              match = self.TAG_URL_RE.match(url)
               if match:
-                it = self.yield_single_photo(url)
+                it = self.yield_tagged_photos(url)
               else:
-                raise ValueError('Unrecognized Flickr URL: %s' % (url,))
+                # This must be the last regexp to try.
+                match = self.PHOTO_URL_RE.match(url)
+                if match:
+                  it = self.yield_single_photo(url)
+                else:
+                  raise ValueError('Unrecognized Flickr URL: %s' % (url,))
     for photo in it:
       yield photo
 

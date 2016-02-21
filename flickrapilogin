@@ -20,6 +20,7 @@ to run flickrapilogin.
 """
 
 import binascii
+import errno
 import hmac
 import os
 import os.path
